@@ -1,43 +1,31 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import math
+from encoder import Encoder
+from decoder import Decoder
 
-class InputEmbeddings(nn.Module):
-    def __init__(self, d_model: int, vocab_size: int) -> None:
-        super().__init__()
-        self.d_model = d_model
-        self.vocab_size = vocab_size
-        self.embedding = nn.Embedding(vocab_size, d_model)
-    
-    def forward(self, x):
-        return self.embeding(x)*math.sqrt(self.d_model)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class Attention(nn.Module):
-    def __init__(self, n_hidden_enc: int, n_hidden_dec: int) -> None:
-        super().__init__()
-        self.n_hidden_enc = n_hidden_enc
-        self.n_hidden_dec = n_hidden_dec
-        self.W = nn.Linear(2*n_hidden_enc + n_hidden_dec, n_hidden_dec, bias=False)
-        self.V = nn.Parameter(torch.rand(n_hidden_dec))
-    
-    def forward(self, hidden_dec, last_layer_enc):
-        """
-            PARAMS:
-                hidden_dec: [b, n_layers, n_hidden_dec]     (1st hidden_dec = encoder's last_h's last layer)
-                last_layer_enc: [b, seq_len, n_hidden_enc*2]
-            
-            RETURN:
-                attn_weights: [b, src_seq_len]
-        """
-        batch_size = last_layer_enc.size(0)
-        src_seq_len = last_layer_enc.size(1)
+class Seq2Seq(nn.Module):
+    def __init__(self, encoder: Encoder, decoder: Decoder, device):
+        super(Seq2Seq, self).__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.device = device
+        
+    def forward(self, src, trg):
+        batch_size = src.size(0)
+        trg_len = trg.size(1)
+        trg_vocab_size = self.decoder.output_dim
 
-        hidden_dec = hidden_dec[:, -1, :].unsqueeze(1).repeat(1, src_seq_len, 1)        #[b, src_seq_len, n_hidden_dec]
-        tanh_W_s_h = torch.tanh(self.W(torch.cat((hidden_dec,last_layer_enc), dim=2)))  #[b, src_seq_len, n_hidden_dec]
-        tanh_W_s_h = tanh_W_s_h.permute(0,2,1)  #[b, n_hidden_dec, src_seq_len]
-        V = self.V.repeat(batch_size, 1).unsqueeze(1) #[b, 1, n_hidden_dec]
-        e = torch.bmm(V, tanh_W_s_h).squeeze(1) #[b, seq_len]
-        attn_weights = F.softmax(e, dim=1) #[b, seq_len]
-        return attn_weights
-
+        outputs = torch.zeros(batch_size, trg_len, trg_vocab_size).to(self.device)
+        encoder_outputs, hidden, cell = self.encoder(src) #[64, 2, 1024], [1, 64, 512], [1, 64, 512]
+        input = trg[:, 0] #[64]
+        input_feed = None
+        for t in range(1, trg_len):
+            output, hidden, cell = self.decoder(input, hidden, cell, encoder_outputs, input_feed) #output:[64,16281], hidden:[2,64,512], cell:[2,64,512]
+            # print(output.shape)
+            outputs[:, t] = output #[64,16281]
+            top1 = output.argmax(1) #[64]
+            input = trg[:, t]
+            input_feed=top1 
+        return outputs
